@@ -34,10 +34,12 @@ class NeuralNetwork:
         # Do we have any hidden layers?
         self.Vs = []
         ni = n_inputs
+        # Initialize weights in hidden layers
         for layeri in range(self.n_hidden_layers):
             n_in_layer = self.n_hiddens_list[layeri]
             self.Vs.append(1 / np.sqrt(1 + ni) * np.random.uniform(-1, 1, size=(1 + ni, n_in_layer)))
             ni = n_in_layer
+        # Initialize weights in output layer
         self.W = 1/np.sqrt(1 + ni) * np.random.uniform(-1, 1, size=(1 + ni, n_outputs))
 
         # Member variables for standardization
@@ -45,6 +47,7 @@ class NeuralNetwork:
         self.Xstds = None
         self.Tmeans = None
         self.Tstds = None
+        self.ridge_penalty = 0
         
         self.trained = False
         self.reason = None
@@ -89,7 +92,6 @@ class NeuralNetwork:
             first += (1 + n_this_layer) * self.n_hiddens_list[i]
             n_this_layer = self.n_hiddens_list[i]
         self.W[:] = w[first:].reshape((1 + n_this_layer, self.n_outputs))
-
     def _forward_pass(self, X):
         # Assume weights already unpacked
         Z_prev = X  # output of previous layer
@@ -104,22 +106,49 @@ class NeuralNetwork:
     def _objectiveF(self, w, X, T):
         self._unpack(w)
         Y, _ = self._forward_pass(X)
-        return 0.5 * np.mean((T - Y)**2)
+        mean_square_error = 0.5 * np.mean((T - Y)**2)
+        if self.ridge_penalty > 0:
+            # Calculate ridge penalty to add to mean square error
+            # Ridge penalty only calculated for original inputs
+            # Weights in first layer
+            W = self.W if self.n_hidden_layers == 0 else self.Vs[0]
+            W = W[1:, :]
+            self.ridge_penalty_count = W.size  # saved here to be used in _backwardPass in layers
+            penalty = self.ridge_penalty * 0.5 * (W**2).sum() / W.size
+        else:
+            penalty = 0
+        return mean_square_error + penalty
 
     def _gradientF(self, w, X, T):
         self._unpack(w)
         Y, Z = self._forward_pass(X)
         # Do backward pass, starting with delta in output layer
         delta = -(T - Y) / (X.shape[0] * T.shape[1])
-        # Another way to define dEdW without calling np.insert                        
         dW = np.vstack((np.sum(delta, axis=0), Z[-1].T @ delta))
+        if self.n_hidden_layers == 0 and self.ridge_penalty > 0:
+            W = self.W[1:, :]
+            penalty_gradient = self.ridge_penalty * W / W.size
+            dW[1:, :] += penalty_gradient
         dVs = []
         delta = (1 - Z[-1]**2) * (delta @ self.W[1:, :].T)
         for Zi in range(self.n_hidden_layers, 0, -1):
             Vi = Zi - 1  # because X is first element of Z
             dV = np.vstack((np.sum(delta, axis=0), Z[Zi-1].T @ delta))
-            dVs.insert(0, dV)  # like append, but at front of list of dVs
-            delta = (delta @ self.Vs[Vi][1:, :].T) * (1 - Z[Zi-1]**2)
+
+            if Zi > 1:
+                # not first layer yet, so calculate delta to
+                # back-propagate to previous layer
+                delta = (delta @ self.Vs[Vi][1:, :].T) * (1 - Z[Zi-1]**2)
+            elif self.ridge_penalty > 0:
+                # We are at first layer. Add ridge penalty.
+                # penalty_gradient = self.ridge_penalty * self.
+                ni = self.n_inputs
+                W = self.Vs[0][1:, :]
+                penalty_gradient = self.ridge_penalty * W / W.size
+                dV[1:, :]  += penalty_gradient
+
+            dVs.insert(0, dV)  # like append, but at front of list of d
+
         return self._pack(dVs, dW)
 
     def _setup_standardize(self, X, T):
@@ -142,10 +171,13 @@ class NeuralNetwork:
     
     def train(self, X, T, n_epochs, method='scg',
               verbose=False, save_weights_history=False,
-              learning_rate=0.001, momentum_rate=0.0): # only for sgd and adam
+              learning_rate=0.001, momentum_rate=0.0,  # only for sgd and adam
+              ridge_penalty=0):
 
         if X.shape[1] != self.n_inputs:
             raise Exception(f'train: number of columns in X ({X.shape[1]}) not equal to number of network inputs ({self.n_inputs})')
+        
+        self.ridge_penalty = ridge_penalty
         
         self._setup_standardize(X, T)
         X = self._standardizeX(X)
@@ -195,31 +227,40 @@ class NeuralNetwork:
 if __name__ == '__main__':
 
     X = 1 + np.arange(10).reshape((-1, 1))
+    n = X.shape[0]
     T = X ** 2 * np.sin(X)
     n_epochs = 500
+    X = np.hstack((X, X))  #  + np.random.uniform(-1, 1, (n, 1))))
 
     def rmse(Y, T):
         return np.sqrt(np.mean((T - Y)**2))
     
-    nnet = NeuralNetwork(1, [], 1)
+    nnet = NeuralNetwork(2, [], 1)
     # Equivalent to
-    # nnet = NeuralNetwork(1, [0], 1)
+    # nnet = NeuralNetwork(2, [0], 1)
     nnet.train(X, T, n_epochs)
     Y = nnet.use(X)
     print(f'scg  {nnet.n_hiddens_list} RMSE {rmse(Y, T):.3f} took {nnet.training_time:.3f} seconds')
 
-    nnet = NeuralNetwork(1, [10, 5, 5, 5], 1)
+    nnet = NeuralNetwork(2, [10, 5, 5, 5], 1)
     nnet.train(X, T, n_epochs, method='scg')
     Y = nnet.use(X)
 
     print(f'scg  {nnet.n_hiddens_list} RMSE {rmse(Y, T):.3f} took {nnet.training_time:.3f} seconds')
 
-    nnet = NeuralNetwork(1, [10, 5, 5, 5], 1)
+    nnet = NeuralNetwork(2, [10, 5, 5, 5], 1)
     nnet.train(X, T, n_epochs, method='sgd', learning_rate=0.5, momentum_rate=0.5)
     Y = nnet.use(X)
     print(f'sgd  {nnet.n_hiddens_list} RMSE {rmse(Y, T):.3f} took {nnet.training_time:.3f} seconds')
     
-    nnet = NeuralNetwork(1, [10, 5, 5, 5], 1)
+    nnet = NeuralNetwork(2, [10, 5, 5, 5], 1)
     nnet.train(X, T, n_epochs, method='adam', learning_rate=0.1)
     Y = nnet.use(X)
     print(f'adam {nnet.n_hiddens_list} RMSE {rmse(Y, T):.3f} took {nnet.training_time:.3f} seconds')
+
+    # nnet = NeuralNetwork(2, [10, 5, 5, 5], 1)
+    nnet = NeuralNetwork(2, [10], 1)
+    # nnet.train(X, T, n_epochs, method='scg', ridge_penalty=10)
+    nnet.train(X, T, 10000, method='scg', ridge_penalty=10)
+    Y = nnet.use(X)
+    print(f'scg with ridge penalty {nnet.n_hiddens_list} RMSE {rmse(Y, T):.3f} took {nnet.training_time:.3f} seconds')

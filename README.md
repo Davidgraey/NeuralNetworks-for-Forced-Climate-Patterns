@@ -54,8 +54,10 @@ nnet = nn.NeuralNetwork(ni, nhs, no)
 
 After the network object has been created, you can train your network model using the .train() function. Inputs (X_array) and targets (T_array) should be numpy arrays
 
+to use a ridge penalty, the arg ridge_penalty is accessed at this point, during the .tran() function.
+
 ```
-nnet.train(X_array, T_array, n_epochs_to_train, method = 'scg')
+nnet.train(X_array, T_array, n_epochs_to_train, method = 'scg', ridge_penalty = 1.5)
 ```
 
 To pass an array through a trained network and get outputs, use the .use() function and assign the return to a variable.
